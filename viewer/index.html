@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LinkImage (.limg) Viewer</title>
+<style>
+  :root { --ink:#1a1a18; --muted:#888780; --bg:#ebe8e0; --rust:#b5522b; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg);
+    color: var(--ink); margin: 0; padding: 24px; display: flex; flex-direction: column;
+    align-items: center; min-height: 100vh; }
+  h1 { font-size: 22px; margin: 0 0 2px; }
+  p.sub { color: var(--muted); margin: 0 0 18px; font-size: 14px; }
+  .drop { border: 2px dashed #c9c4b8; border-radius: 12px; padding: 26px 38px;
+    text-align: center; cursor: pointer; background: #f6f4ee; margin-bottom: 18px; }
+  .drop:hover { border-color: var(--rust); }
+  .drop input { display: none; }
+  .stage { position: relative; display: inline-block; line-height: 0; }
+  .stage canvas { max-width: 100%; height: auto; border-radius: 8px; display:block; }
+  .hotspot { position: absolute; cursor: pointer; border-radius: 6px;
+    outline: 2px solid transparent; transition: outline-color .12s, background .12s; }
+  .hotspot:hover { outline-color: var(--rust); background: rgba(181,82,43,0.10); }
+  .legend { margin-top: 16px; font-size: 13px; color: var(--muted); max-width: 520px; }
+  .legend code { background: #f0ede4; padding: 1px 5px; border-radius: 4px; }
+  .row { display:flex; gap:8px; align-items:center; margin:4px 0; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:10px; background:#e6f1fb; color:#0c447c;}
+  .tag.email { background:#eaf3de; color:#27500a; }
+  .note { font-size:12px; color:#a08f7a; margin-top:10px; max-width:520px; text-align:center;}
+</style>
+</head>
+<body>
+  <h1>LinkImage viewer</h1>
+  <p class="sub">Open a <code>.limg</code> file — pixels are rebuilt by our own decoder.</p>
+
+  <label class="drop">
+    <input type="file" id="file" accept=".limg">
+    <strong>Click to choose a .limg file</strong><br>
+    <span style="color:#888780;font-size:13px">or drag &amp; drop it here</span>
+  </label>
+
+  <div class="stage" id="stage"></div>
+  <div class="legend" id="legend"></div>
+  <p class="note" id="note"></p>
+
+<script>
+const MAGIC = [0x89,0x4c,0x49,0x4d,0x47,0x0d,0x0a,0x1a]; // \x89 L I M G \r \n \x1a
+const COMP_RAW = 0, COMP_RLE = 1;
+
+// our own RLE decoder — mirrors core.py exactly. NO image/png decoding happens.
+function rleDecode(bytes, width, height){
+  const out = new Uint8ClampedArray(width * height * 4);
+  let o = 0, i = 0;
+  while (i < bytes.length){
+    const run = bytes[i];
+    const r = bytes[i+1], g = bytes[i+2], b = bytes[i+3], a = bytes[i+4];
+    for (let k = 0; k < run; k++){ out[o++]=r; out[o++]=g; out[o++]=b; out[o++]=a; }
+    i += 5;
+  }
+  return out;
+}
+
+function decodeLimg(buffer){
+  const bytes = new Uint8Array(buffer);
+  for (let i=0;i<8;i++) if (bytes[i] !== MAGIC[i]) throw new Error("Not a valid .limg file");
+  const dv = new DataView(buffer);
+  let o = 8;
+  const version = dv.getUint16(o,false); o += 2;
+  const width   = dv.getUint32(o,false); o += 4;
+  const height  = dv.getUint32(o,false); o += 4;
+  const comp    = dv.getUint8(o);        o += 1;
+  const pixLen  = dv.getUint32(o,false); o += 4;
+  const pix     = bytes.slice(o, o + pixLen); o += pixLen;
+  const hotLen  = dv.getUint32(o,false); o += 4;
+  const hotspots = JSON.parse(new TextDecoder("utf-8").decode(bytes.slice(o, o + hotLen)));
+
+  let rgba;
+  if (comp === COMP_RLE)      rgba = rleDecode(pix, width, height);
+  else if (comp === COMP_RAW) rgba = new Uint8ClampedArray(pix);
+  else throw new Error("unknown compression id " + comp);
+
+  return { version, width, height, comp, rgba, hotspots };
+}
+
+function render(data){
+  const stage = document.getElementById("stage");
+  const legend = document.getElementById("legend");
+  const note = document.getElementById("note");
+  stage.innerHTML = ""; legend.innerHTML = "";
+
+  // paint raw pixels straight onto a canvas — no <img>, no PNG decode
+  const canvas = document.createElement("canvas");
+  canvas.width = data.width; canvas.height = data.height;
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(new ImageData(data.rgba, data.width, data.height), 0, 0);
+  stage.appendChild(canvas);
+
+  const place = () => {
+    const sx = canvas.clientWidth / data.width;
+    const sy = canvas.clientHeight / data.height;
+    stage.querySelectorAll(".hotspot").forEach(e => e.remove());
+    data.hotspots.forEach(h => {
+      const el = document.createElement("a");
+      el.className = "hotspot";
+      el.style.left = (h.x*sx)+"px"; el.style.top = (h.y*sy)+"px";
+      el.style.width = (h.w*sx)+"px"; el.style.height = (h.h*sy)+"px";
+      el.title = h.label + " — " + h.value;
+      el.href = h.type === "email" ? ("mailto:" + h.value) : h.value;
+      el.target = "_blank";
+      stage.appendChild(el);
+    });
+  };
+  place();
+  window.addEventListener("resize", place);
+
+  legend.innerHTML = "<strong>Hotspots:</strong>";
+  data.hotspots.forEach(h => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="tag ${h.type==='email'?'email':''}">${h.type}</span>
+                     <span>${h.label}: ${h.value}</span>`;
+    legend.appendChild(row);
+  });
+  note.textContent = `Rendered ${data.width}×${data.height} from `
+    + (data.comp === COMP_RLE ? "our RLE codec" : "raw pixels")
+    + " — the browser never decoded a PNG or JPEG.";
+}
+
+function handleFile(file){
+  const r = new FileReader();
+  r.onload = e => { try { render(decodeLimg(e.target.result)); }
+                    catch(err){ alert(err.message); } };
+  r.readAsArrayBuffer(file);
+}
+
+document.getElementById("file").addEventListener("change",
+  e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+const drop = document.querySelector(".drop");
+["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => e.preventDefault()));
+drop.addEventListener("drop", e => { e.preventDefault();
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>
