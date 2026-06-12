@@ -4,7 +4,6 @@ A from-scratch raster image format. Pixel data is stored with our **own**
 compression — there is no PNG, JPEG, WebP, or zlib data inside a `.limg` file.
 A clickable-hotspot layer is part of the format itself.
 
-## Byte layout (all integers big-endian)
 
 ```
 OFFSET  SIZE  FIELD       MEANING
